@@ -4176,12 +4176,12 @@ var dragndrop = require('../Input/dragndrop.js');
  *     // might depend on it.
  *     container : document.body,
  *
- *     // Defines whether graph can respond to use input
+ *     // Defines whether graph can respond to user input
  *     interactive: true,
  *
  *     // Layout algorithm to be used. The algorithm is expected to comply with defined
  *     // interface and is expected to be iterative. Renderer will use it then to calculate
- *     // grpaph's layout. For examples of the interface refer to Viva.Graph.Layout.forceDirected()
+ *     // graph's layout. For examples of the interface refer to Viva.Graph.Layout.forceDirected()
  *     layout : Viva.Graph.Layout.forceDirected(),
  *
  *     // Directs renderer to display links. Usually rendering links is the slowest part of this
@@ -4192,6 +4192,9 @@ var dragndrop = require('../Input/dragndrop.js');
  *     // the closer to ideal position graph will appear first time. But be careful: for large graphs
  *     // it can freeze the browser.
  *     prerender : 0
+ *
+ *     // Whether to automatically resize the graph when the window is resized
+ *     autoResize: true
  *   }
  */
 function renderer(graph, settings) {
@@ -4207,6 +4210,7 @@ function renderer(graph, settings) {
     interactive = settings.interactive !== undefined ? settings.interactive : true,
     inputManager,
     animationTimer,
+    zoomAnimationTimer,
     rendererInitialized = false,
     updateCenterRequired = true,
 
@@ -4223,6 +4227,7 @@ function renderer(graph, settings) {
     },
 
     publicEvents = eventify({}),
+    containerSize,
     containerDrag;
 
   return {
@@ -4269,6 +4274,15 @@ function renderer(graph, settings) {
       animationTimer.restart();
     },
 
+    setScale: function(newScale) {
+      graphics.setScale(newScale);
+      updateLocalTransform();
+    },
+
+    updateCenter: function() {
+      updateCenter();
+    },
+
     rerender: function() {
       renderGraph();
       return this;
@@ -4288,6 +4302,10 @@ function renderer(graph, settings) {
     moveTo: function(x, y) {
       graphics.graphCenterChanged(transform.offsetX - x * transform.scale, transform.offsetY - y * transform.scale);
       renderGraph();
+    },
+
+    onResize: function() {
+      onWindowResized();
     },
 
     /**
@@ -4331,7 +4349,7 @@ function renderer(graph, settings) {
     container = container || window.document.body;
     layout = layout || forceDirected(graph, {
       springLength: 80,
-      springCoeff: 0.0002,
+      springCoeff: 0.0002
     });
     graphics = graphics || svgGraphics(graph, {
       container: container
@@ -4339,6 +4357,10 @@ function renderer(graph, settings) {
 
     if (!settings.hasOwnProperty('renderLinks')) {
       settings.renderLinks = true;
+    }
+
+    if (!settings.hasOwnProperty('autoResize')) {
+      settings.autoResize = true;
     }
 
     settings.prerender = settings.prerender || 0;
@@ -4401,15 +4423,20 @@ function renderer(graph, settings) {
     }
   }
 
+  /**
+   * Center the container on the middle of the graph
+   */
   function updateCenter() {
-    var graphRect = layout.getGraphRect(),
-      containerSize = getDimension(container);
+    // Update container size
+    containerSize = getDimension(container);
 
-    var cx = (graphRect.x2 + graphRect.x1) / 2;
-    var cy = (graphRect.y2 + graphRect.y1) / 2;
-    transform.offsetX = containerSize.width / 2 - (cx * transform.scale - cx);
-    transform.offsetY = containerSize.height / 2 - (cy * transform.scale - cy);
-    graphics.graphCenterChanged(transform.offsetX, transform.offsetY);
+    if (containerSize.width < 1 || containerSize.height < 1) {
+      return;
+    }
+
+    var newCenter = graphics.getGraphCenter(containerSize, layout.getGraphRect());
+    graphics.setCenter(newCenter);
+    updateLocalTransform();
 
     updateCenterRequired = false;
   }
@@ -4535,9 +4562,40 @@ function renderer(graph, settings) {
     resetStable();
   }
 
+  /**
+   * Sync our local transform from the graph's transform
+   * */
+  function updateLocalTransform() {
+    var center = graphics.getCenter();
+    containerSize = getDimension(container);
+    transform.scale = graphics.scale();
+    transform.offsetX = containerSize.width * (center.x + 1) / 2;
+    transform.offsetY = (1 - center.y) * containerSize.height / 2;
+  }
+
   function onWindowResized() {
-    updateCenter();
+
+    var newSize = getDimension(container);
+    if (!containerSize) {
+      // Unknown previous container size (should not happen)
+      containerSize = newSize;
+    }
+
+    var currentCenter = graphics.getCenter();
+    var previousScale = graphics.scale();
+
+    // Maintain current scale but resize graphics (TODO: expose graphics.updateSize() directly so we don't need to do scale shenanigans)
+    graphics.resetScale(); // this does the resize but also resets the transform
+    graphics.setScale(previousScale);
+
+    // Maintain graph center
+    graphics.preserveCenter(currentCenter, newSize, containerSize);
+
+    updateLocalTransform();
     onRenderFrame();
+
+    // Save size for next round
+    containerSize = newSize;
   }
 
   function releaseContainerDragManager() {
@@ -4551,16 +4609,17 @@ function renderer(graph, settings) {
     graph.off('changed', onGraphChanged);
   }
 
+  var scaleInFactor = Math.pow(1.4, .2);
+  var scaleOutFactor = Math.pow(1.4, -.2);
   function scale(out, scrollPoint) {
     if (!scrollPoint) {
-      var containerSize = getDimension(container);
+      containerSize = getDimension(container);
       scrollPoint = {
         x: containerSize.width / 2,
         y: containerSize.height / 2
       };
     }
-    var scaleFactor = Math.pow(1 + 0.4, out ? -0.2 : 0.2);
-    transform.scale = graphics.scale(scaleFactor, scrollPoint);
+    transform.scale = graphics.scale(out? scaleOutFactor: scaleInFactor, scrollPoint);
 
     renderGraph();
     publicEvents.fire('scale', transform.scale);
@@ -4569,11 +4628,14 @@ function renderer(graph, settings) {
   }
 
   function listenToEvents() {
-    windowEvents.on('resize', onWindowResized);
+    if (settings.autoResize) {
+      windowEvents.on('resize', onWindowResized);
+    }
 
     releaseContainerDragManager();
     if (isInteractive('drag')) {
       containerDrag = dragndrop(container);
+      containerSize = getDimension(container);
       containerDrag.onDrag(function(e, offset) {
         graphics.translateRel(offset.x, offset.y);
 
@@ -4585,8 +4647,58 @@ function renderer(graph, settings) {
       if (!containerDrag) {
         containerDrag = dragndrop(container);
       }
-      containerDrag.onScroll(function(e, scaleOffset, scrollPoint) {
-        scale(scaleOffset < 0, scrollPoint);
+
+      var scrollScaleInFactor = 1.4;
+      var scrollScaleOutFactor = 1 / 1.4;
+      containerDrag.onScroll(function (e, scaleOffset, scrollPoint) {
+        // Update container dimensions
+        containerSize = getDimension(container);
+
+        // Determine target scale
+        var currentScale = graphics.scale();
+        var scaleFactor = scaleOffset < 0 ? scrollScaleOutFactor : scrollScaleInFactor;
+        var targetScale = currentScale * scaleFactor;
+
+        // Determine target center
+        var currentCenter = graphics.getCenter();
+        var currentCx = currentCenter.x;
+        var currentCy = currentCenter.y;
+
+        var newCenter = graphics.getScaleScrollPointCenter(scaleFactor, scrollPoint);
+        var targetCx = newCenter.x;
+        var targetCy = newCenter.y;
+
+        if (zoomAnimationTimer) {
+          // Stop existing animation timer
+          zoomAnimationTimer.stop();
+        }
+
+        var zoomAnimationStart = Date.now();
+        var animationDuration = 150;
+        zoomAnimationTimer = timer(function () {
+          var elapsed = Date.now() - zoomAnimationStart;
+          var progress = elapsed / animationDuration;
+          var stepScale = currentScale + (targetScale - currentScale) * progress;
+          var stepCx = currentCx + (targetCx - currentCx) * progress;
+          var stepCy = currentCy + (targetCy - currentCy) * progress;
+          graphics.setScale(stepScale);
+          graphics.setCenter({x: stepCx, y: stepCy});
+          updateLocalTransform();
+
+          // Kick an iteration in case we're stable
+          if (!isPaused && isStable) {
+            renderGraph();
+          }
+
+          var finished = elapsed >= animationDuration;
+          if (finished) {
+            zoomAnimationTimer = null;
+            graphics.setScale(targetScale);
+            graphics.setCenter({ x: targetCx, y: targetCy });
+            updateLocalTransform();
+          }
+          return !finished;
+        }, 1000 / 16);
       });
     }
 
@@ -4793,25 +4905,89 @@ function svgGraphics() {
             svgContainer.attr("transform", transform);
         },
 
+        /**
+         * Return the center of the graph in SVG coordinates
+         * Can be passed in as-is to setCenter()
+         **/
+        getCenter: function () {
+            var t = svgContainer.getCTM();
+            return {x: t.e, y: t.f};
+        },
+
+        /**
+         * Set the center of the graph in SVG coordinates
+         *
+         * @param center the new center of the graph in clip space coordinates
+         **/
+        setCenter: function (center) {
+          var t = svgContainer.getCTM(),
+              transform = 'matrix(' + t.a + ', 0, 0,' + t.d + ',' + center.x + ',' + center.y + ')';
+          svgContainer.attr('transform', transform);
+        },
+
+        /**
+         * Maintain the center of the viewport through a resize
+         * Note: the SVG and WebGL canvases are resized differently which is why this is graphics dependant
+         *
+         * @param currentCenter the center of the graph prior resize
+         * @param newSize the size of the container post resize
+         * @param previousSize the size of the container prior resize
+         **/
+        preserveCenter: function(currentCenter, newSize, previousSize) {
+          var newCenterX = currentCenter.x + (newSize.width - previousSize.width) / 2;
+          var newCenterY = currentCenter.y + (newSize.height - previousSize.height) / 2;
+          this.setCenter({x: newCenterX, y: newCenterY});
+        },
+
+        /**
+         * Set the absolute scale (i.e. zoom level)
+         *
+         * @param scale the new absolute scale
+         **/
+        setScale: function (scale) {
+            var t = svgContainer.getCTM(),
+                transform = 'matrix(' + scale + ', 0, 0,' + scale + ',' + t.e + ',' + t.f + ')';
+            svgContainer.attr('transform', transform);
+            fireRescaled(this);
+        },
+
+        /**
+         * Multiply the current scale by scaleFactor, optionally moving to scrollPoint before applying the scale
+         * This is used by scroll-to-zoom to give a map-like zoom behaviour
+         * If called with no arguments, return the current scale
+         *
+         * @param scaleFactor the scale multiplier
+         * @param scrollPoint the point in DOM coordinates from which the scale is applied
+         **/
         scale : function (scaleFactor, scrollPoint) {
-            var p = svgRoot.createSVGPoint();
-            p.x = scrollPoint.x;
-            p.y = scrollPoint.y;
+            // If no scaleFactor is passed in return the current scale
+            if (!scaleFactor) { // falsie check is ok because 0 would be an invalid scale
+                return svgContainer.getCTM().a;
+            }
 
-            p = p.matrixTransform(svgContainer.getCTM().inverse()); // translate to SVG coordinates
+            var newCenter = this.getScaleScrollPointCenter(scaleFactor, scrollPoint);
 
-            // Compute new scale matrix in current mouse position
-            var k = svgRoot.createSVGMatrix().translate(p.x, p.y).scale(scaleFactor).translate(-p.x, -p.y),
-                t = svgContainer.getCTM().multiply(k);
-
-            actualScale = t.a;
-            offsetX = t.e;
-            offsetY = t.f;
-            var transform = "matrix(" + t.a + ", 0, 0," + t.d + "," + t.e + "," + t.f + ")";
+            actualScale = svgContainer.getCTM().a * scaleFactor;
+            offsetX = newCenter.x;
+            offsetY = newCenter.y;
+            var transform = "matrix(" + actualScale + ", 0, 0," + t.d + "," + newCenter.x + "," + newCenter.y + ")";
             svgContainer.attr("transform", transform);
 
             fireRescaled(this);
             return actualScale;
+        },
+
+        getScaleScrollPointCenter : function(scaleFactor, scrollPoint) {
+          var p = svgRoot.createSVGPoint();
+          p.x = scrollPoint.x;
+          p.y = scrollPoint.y;
+
+          p = p.matrixTransform(svgContainer.getCTM().inverse()); // translate to SVG coordinates
+
+          // Compute new scale matrix in current mouse position
+          var k = svgRoot.createSVGMatrix().translate(p.x, p.y).scale(scaleFactor).translate(-p.x, -p.y),
+            t = svgContainer.getCTM().multiply(k);
+          return {x: t.e, y: t.f};
         },
 
         resetScale : function () {
@@ -4820,6 +4996,14 @@ function svgGraphics() {
             svgContainer.attr("transform", transform);
             fireRescaled(this);
             return this;
+        },
+
+        getGraphCenter: function(containerSize, graphRect) {
+          var scale = this.scale();
+          return {
+            x: containerSize.width / 2 - scale * (graphRect.x1 + graphRect.x2) / containerSize.width,
+            y: containerSize.height / 2 + scale * (graphRect.y1 + graphRect.y2) / containerSize.height
+          };
         },
 
        /**
@@ -5049,6 +5233,15 @@ function webglGraphics(options) {
         linkUIBuilder = function (link) {
             return webglLine(0xb3b3b3ff);
         },
+
+        /** Log the weird WebGL column based transform array as a conventional transform matrix */
+        logTransform = function() {
+          var ret = '\n';
+          for (var i = 0; i < 4; i++) {
+            ret += transform[0 + i] + '\t' + transform[4 + i] + '\t' + transform[8 + i] + '\t' + transform[12 + i] + '\n';
+          }
+          console.log(ret);
+        },
 /*jshint unused: true */
         updateTransformUniform = function () {
             linkProgram.updateTransform(transform);
@@ -5238,16 +5431,70 @@ function webglGraphics(options) {
             updateTransformUniform();
         },
 
+        /**
+         * Return the center of the graph in clip space coordinates
+         * Can be passed in as-is to setCenter()
+         * */
+        getCenter: function () {
+            return {x: transform[12], y: transform[13]};
+        },
+
+        /**
+         * Set the center of the graph in clip space coordinates
+         *
+         * @param center the new center of the graph in clip space coordinates
+         * */
+        setCenter: function (center) {
+            // We only have linear transforms on the X and Y axes
+            transform[12] = center.x;
+            transform[13] = center.y;
+            updateTransformUniform();
+        },
+
+        /**
+         * Maintain the center of the viewport through a resize
+         * Note: the SVG and WebGL canvases are resized differently which is why this is graphics dependant
+         *
+         * @param currentCenter the center of the graph prior resize
+         * @param newSize the size of the container post resize
+         * @param previousSize the size of the container prior resize
+         * */
+        preserveCenter: function(currentCenter, newSize, previousSize) {
+            var newCenterX = currentCenter.x * (previousSize.width / newSize.width);
+            var newCenterY = currentCenter.y * (previousSize.height / newSize.height);
+            this.setCenter({x: newCenterX, y: newCenterY});
+        },
+
+        /**
+         * Set the absolute scale (i.e. zoom level)
+         *
+         * @param scale the new absolute scale
+         * */
+        setScale: function (scale) {
+            // We only have linear transforms on the X and Y axes
+            transform[0] = scale;
+            transform[5] = scale;
+            updateTransformUniform();
+            fireRescaled(this);
+        },
+
+        /**
+         * Multiply the current scale by scaleFactor, optionally moving to scrollPoint before applying the scale
+         * This is used by scroll-to-zoom to give a map-like zoom behaviour
+         * If called with no arguments, return the current scale
+         *
+         * @param scaleFactor the scale multiplier
+         * @param scrollPoint the point in DOM coordinates from which the scale is applied
+         * */
         scale : function (scaleFactor, scrollPoint) {
-            // Transform scroll point to clip-space coordinates:
-            var cx = 2 * scrollPoint.x / width - 1,
-                cy = 1 - (2 * scrollPoint.y) / height;
+            // If no scaleFactor is passed in return the current scale
+            if (!scaleFactor) { // falsie check is ok because 0 would be an invalid scale
+                return transform[0];
+            }
 
-            cx -= transform[12];
-            cy -= transform[13];
-
-            transform[12] += cx * (1 - scaleFactor);
-            transform[13] += cy * (1 - scaleFactor);
+            if (scrollPoint) {
+              this.setCenter(this.getScaleScrollPointCenter(scaleFactor, scrollPoint));
+            }
 
             transform[0] *= scaleFactor;
             transform[5] *= scaleFactor;
@@ -5256,6 +5503,30 @@ function webglGraphics(options) {
             fireRescaled(this);
 
             return transform[0];
+        },
+
+        getScaleScrollPointCenter : function(scaleFactor, scrollPoint) {
+          var currentCenter = this.getCenter();
+
+          // Transform scroll point to clip-space coordinates:
+          var cx = 2 * scrollPoint.x / width - 1,
+              cy = 1 - (2 * scrollPoint.y) / height;
+
+          cx -= currentCenter.x;
+          cy -= currentCenter.y;
+
+          return {
+            x: currentCenter.x + cx * (1 - scaleFactor),
+            y: currentCenter.y + cy * (1 - scaleFactor)
+          };
+        },
+
+        getGraphCenter: function(containerSize, graphRect) {
+          var scale = this.scale();
+          return {
+            x: -scale * (graphRect.x1 + graphRect.x2) / containerSize.width,
+            y: scale * (graphRect.y1 + graphRect.y2) / containerSize.height
+          };
         },
 
         resetScale : function () {
