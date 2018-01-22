@@ -4121,7 +4121,7 @@ var nullEvents = require('./nullEvents.js');
 module.exports = createDocumentEvents();
 
 function createDocumentEvents() {
-  if (typeof window === undefined) {
+  if (typeof window === 'undefined') {
     return nullEvents;
   }
 
@@ -4640,6 +4640,7 @@ function renderer(graph, settings) {
         graphics.translateRel(offset.x, offset.y);
 
         renderGraph();
+        publicEvents.fire('drag', offset);
       });
     }
 
@@ -5543,6 +5544,12 @@ function webglGraphics(options) {
         },
 
        /**
+        * Resizes the graphic without resetting the scale. 
+        * Useful with viva graph in a dynamic container
+        */
+        updateSize: updateSize,
+
+       /**
         * Called by Viva.Graph.View.renderer to let concrete graphic output
         * provider prepare to render.
         */
@@ -5678,7 +5685,7 @@ function webglGraphics(options) {
             for (var i = 0; i < nodesCount; ++i) {
                 var ui = nodes[i];
                 pos.x = ui.position.x;
-                pos.y = -ui.position.y;
+                pos.y = ui.position.y;
                 if (userPlaceNodeCallback) {
                     userPlaceNodeCallback(ui, pos);
                 }
@@ -5754,20 +5761,54 @@ function webglGraphics(options) {
                 // TODO: unload old shader and reinit.
             }
         },
-        transformClientToGraphCoordinates : function (graphicsRootPos) {
-            // TODO: could be a problem when container has margins?
-            // to save memory we modify incoming parameter:
-            // point in clipspace coordinates:
-            graphicsRootPos.x = 2 * graphicsRootPos.x / width - 1;
-            graphicsRootPos.y = 1 - (2 * graphicsRootPos.y) / height;
-            // apply transform:
-            graphicsRootPos.x = (graphicsRootPos.x - transform[12]) / transform[0];
-            graphicsRootPos.y = (graphicsRootPos.y - transform[13]) / transform[5];
-            // now transform to graph coordinates:
-            graphicsRootPos.x *= width / 2;
-            graphicsRootPos.y *= -height / 2;
 
-            return graphicsRootPos;
+        /**
+         * Transforms client coordinates into layout coordinates. Client coordinates
+         * are DOM coordinates relative to the rendering container. Layout
+         * coordinates are those assigned by by layout algorithm to each node.
+         *
+         * @param {Object} p - a point object with `x` and `y` attributes.
+         * This method mutates p.
+         */
+        transformClientToGraphCoordinates: function (p) {
+          // TODO: could be a problem when container has margins?
+            // normalize
+            p.x = ((2 * p.x) / width) - 1;
+            p.y = 1 - ((2 * p.y) / height);
+
+            // apply transform
+            p.x = (p.x - transform[12]) / transform[0];
+            p.y = (p.y - transform[13]) / transform[5];
+
+            // transform to graph coordinates
+            p.x = p.x * (width / 2);
+            p.y = p.y * (-height / 2);
+
+            return p;
+        },
+
+        /**
+         * Transforms WebGL coordinates into client coordinates. Reverse of 
+         * `transformClientToGraphCoordinates()`
+         *
+         * @param {Object} p - a point object with `x` and `y` attributes, which
+         * represents a layout coordinate. This method mutates p.
+         */
+        transformGraphToClientCoordinates: function (p) {
+          // TODO: could be a problem when container has margins?
+            // transform from graph coordinates
+            p.x = p.x / (width / 2);
+            p.y = p.y / (-height / 2);
+
+            // apply transform
+            p.x = (p.x * transform[0]) + transform[12];
+            p.y = (p.y * transform[5]) + transform[13];
+
+            // denormalize
+            p.x = ((p.x + 1) * width) / 2;
+            p.y = ((1 - p.y) * height) / 2;
+
+            return p;
         },
 
         getNodeAtClientPos: function (clientPos, preciseCheck) {
@@ -6680,11 +6721,13 @@ function webglInputEvents(webglGraphics) {
         pos.x = e.clientX - boundRect.left;
         pos.y = e.clientY - boundRect.top;
 
-        args = [getNodeAtClientPos(pos), e];
+        var nodeAtClientPos = getNodeAtClientPos(pos);
+        var sameNode = nodeAtClientPos === lastFound;
+        args = [nodeAtClientPos || lastFound, e];
         if (args[0]) {
           window.document.onselectstart = prevSelectStart;
 
-          if (clickTime - lastClickTime < 400 && args[0] === lastFound) {
+          if (clickTime - lastClickTime < 400 && sameNode) {
             invoke(dblClickCallback, args);
           } else {
             invoke(clickCallback, args);
@@ -6990,7 +7033,7 @@ function webglNodeProgram() {
     var idx = nodeUI.id;
 
     positions[idx * ATTRIBUTES_PER_PRIMITIVE] = pos.x;
-    positions[idx * ATTRIBUTES_PER_PRIMITIVE + 1] = pos.y;
+    positions[idx * ATTRIBUTES_PER_PRIMITIVE + 1] = -pos.y;
     positions[idx * ATTRIBUTES_PER_PRIMITIVE + 2] = nodeUI.size;
 
     colors[idx * ATTRIBUTES_PER_PRIMITIVE + 3] = nodeUI.color;
@@ -7071,7 +7114,7 @@ function webglSquare(size, color) {
 
 },{"./parseColor.js":51}],62:[function(require,module,exports){
 // todo: this should be generated at build time.
-module.exports = '0.7.12';
+module.exports = '0.8.1';
 
 },{}]},{},[1])(1)
 });
