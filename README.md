@@ -1,9 +1,9 @@
 VivaGraph [![Build Status](https://travis-ci.org/anvaka/VivaGraphJS.svg)](https://travis-ci.org/anvaka/VivaGraphJS)
 ==================================================
-**VivaGraphJS** is a free [graph drawing](http://en.wikipedia.org/wiki/Graph_drawing)
-library for JavaScript. It is designed to be extensible and to support different
-rendering engines and layout algorithms. At the moment it supports rendering
-graphs using WebGL and SVG.
+**VivaGraphJS** is designed to be extensible and to support different
+rendering engines and layout algorithms. Underlying algorithms have been broken out into [ngraph](https://github.com/anvaka/ngraph).
+
+The larger family of modules can be found by [querying npm for "ngraph"](https://www.npmjs.com/search?q=ngraph).
 
 [![Gitter](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/anvaka/VivaGraphJS?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge)
 
@@ -13,7 +13,6 @@ Some examples of library usage in the real projects:
 
 * [Amazon Visualization](http://www.yasiv.com/amazon#/Search?q=graph%20drawing&category=Books&lang=US) Shows related products on Amazon.com, uses SVG as graph output
 * [YouTube Visualization](http://www.yasiv.com/youtube#/Search?q=write%20in%20c) Shows related videos from YouTube. SVG based.
-* [Facebook Visualization](http://www.yasiv.com/facebook) friendship visualization on Facebook. WebGL based.
 * [Graph Viewer](http://www.yasiv.com/graphs#Bai/rw496) visualization of sparse matrices collection of the University of Florida. WebGL based.
 * [Vkontakte Visualization](http://www.yasiv.com/vk) friendship visualization of the largest social network in Russia [vk.com](https://vk.com). WebGL based.
 
@@ -28,9 +27,22 @@ var renderer = Viva.Graph.View.renderer(graph);
 renderer.run();
 ```
 
-This will produce the following layout:
+This will instantiate a graph inside `document.body`:
 
 ![Simple graph](https://github.com/anvaka/VivaGraphJS/raw/master/packages/Images/mingraph.png)
+
+If you want to render graph in your own DOM element:
+
+```javascript
+var graph = Viva.Graph.graph();
+graph.addLink(1, 2);
+
+// specify where it should be rendered:
+var renderer = Viva.Graph.View.renderer(graph, {
+  container: document.getElementById('graphDiv')
+});
+renderer.run();
+```
 
 The code above adds a link to the graph between nodes `1` and `2`. Since nodes
 are not yet in the graph they will be created. It's equivalent to
@@ -153,6 +165,8 @@ Now the result is much better:
 
 ![Grid 3x3](https://github.com/anvaka/VivaGraphJS/raw/master/packages/Images/gridGood.png)
 
+You can tune values during simulation with `layout.simulator.springLength(newValue)`, `layout.simulator.springCoeff(newValue)`, etc. See all the values that you can tune in [this source file](https://github.com/anvaka/ngraph.physics.simulator/blob/master/index.js#L12).
+
 Tuning layout algorithm is definitely one of the hardest part of using this library.
 It has to be improved in future to simplify usage. Each of the force directed
 algorithm parameters are described in the source code.
@@ -179,7 +193,7 @@ Local Build
 -----------
 Run the following script:
 ```
-git clone git://github.com/anvaka/VivaGraphJS.git
+git clone https://github.com/anvaka/VivaGraphJS.git
 cd ./VivaGraphJS
 npm install
 gulp release
